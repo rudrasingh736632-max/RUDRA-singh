@@ -1,0 +1,5 @@
+{
+  "name": "AI Creator Studio Pro",
+  "description": "All-in-one AI Creator Operating System for voices, images, videos, and thumbnails.",
+  "requestFramePermissions": ["microphone"]
+}
