@@ -1,14 +1,17 @@
 export interface User {
-  id: number;
+  uid: string;
   email: string;
+  photoURL?: string;
   credits: number;
   is_admin: boolean;
   subscription_tier: string;
+  created_at?: string;
 }
 
 export interface Generation {
-  id: number;
-  type: 'voice' | 'image' | 'video' | 'thumbnail';
+  id: string;
+  userId?: string;
+  type: 'voice' | 'image' | 'video' | 'thumbnail' | 'bg-remover' | 'script' | 'sfx' | 'music' | 'story';
   prompt: string;
   result_url: string;
   credits_used: number;

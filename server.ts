@@ -5,6 +5,8 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import db from "./src/db.js";
 import { GoogleGenAI } from "@google/genai";
+import path from 'path';
+import fs from 'fs';
 
 const app = express();
 const PORT = 3000;
@@ -29,6 +31,10 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 // --- API Routes ---
 
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
 // Auth
 app.post("/api/auth/signup", async (req, res) => {
   const { email, password } = req.body;
@@ -40,6 +46,78 @@ app.post("/api/auth/signup", async (req, res) => {
     res.json({ token, user: { id: result.lastInsertRowid, email, credits: 30, subscription_tier: 'free' } });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/auth/google/url", (req, res) => {
+  const redirectUri = `${req.headers.origin || process.env.APP_URL}/api/auth/google/callback`;
+  const params = new URLSearchParams({
+    client_id: process.env.GOOGLE_CLIENT_ID || '',
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'email profile',
+    access_type: 'offline',
+    prompt: 'consent'
+  });
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+  res.json({ url: authUrl });
+});
+
+app.get(["/api/auth/google/callback", "/api/auth/google/callback/"], async (req, res) => {
+  const { code } = req.query;
+  try {
+    const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+    
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID || '',
+        client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+        code: code as string,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+      }),
+    });
+    
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) throw new Error('Failed to get access token');
+
+    // Get user info
+    const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userData = await userResponse.json();
+    const email = userData.email;
+
+    let user: any = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    if (!user) {
+      const dummyPassword = await bcrypt.hash(Math.random().toString(36), 10);
+      const stmt = db.prepare("INSERT INTO users (email, password) VALUES (?, ?)");
+      const result = stmt.run(email, dummyPassword);
+      user = { id: result.lastInsertRowid, email, credits: 30, subscription_tier: 'free', is_admin: 0 };
+    }
+    const token = jwt.sign({ id: user.id, email: user.email, is_admin: user.is_admin }, JWT_SECRET);
+    const userObj = { id: user.id, email: user.email, credits: user.credits, is_admin: user.is_admin, subscription_tier: user.subscription_tier };
+
+    res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', token: '${token}', user: ${JSON.stringify(userObj)} }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+          <p>Authentication successful. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  } catch (error: any) {
+    res.status(400).send(`Authentication failed: ${error.message}`);
   }
 });
 
@@ -125,6 +203,21 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static("dist"));
+    app.get('*', (req, res) => {
+      const indexHtml = path.resolve('dist/index.html');
+      fs.readFile(indexHtml, 'utf8', (err, data) => {
+        if (err) {
+          console.error('Error reading index.html:', err);
+          return res.status(500).send('Error loading page');
+        }
+        const title = 'Studio Pro - AI-Powered Content Creation';
+        const description = 'Create stunning videos, images, and voiceovers with the power of AI. Your all-in-one content creation suite.';
+        const html = data
+          .replace(/<title>.*<\/title>/, `<title>${title}</title>`)
+          .replace(/<meta name="description" content=".*"\/>/, `<meta name="description" content="${description}"/>`);
+        res.send(html);
+      });
+    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {

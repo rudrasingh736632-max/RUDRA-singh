@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "credits": {
+          "type": "number",
+          "description": "Number of credits available"
+        },
+        "is_admin": {
+          "type": "boolean"
+        },
+        "subscription_tier": {
+          "type": "string",
+          "enum": ["free", "pro", "enterprise"]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "credits", "is_admin", "subscription_tier", "created_at"]
+    },
+    "Generation": {
+      "title": "Generation",
+      "description": "A generated asset (video, image, voice, thumbnail)",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user who generated this"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["voice", "image", "video", "thumbnail"]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "result_url": {
+          "type": "string"
+        },
+        "credits_used": {
+          "type": "number"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "type", "prompt", "result_url", "credits_used", "created_at"]
+    },
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Global site settings",
+      "type": "object",
+      "properties": {
+        "primary_color": { "type": "string" },
+        "accent_color": { "type": "string" },
+        "hero_headline": { "type": "string" },
+        "hero_cta": { "type": "string" },
+        "theme": { "type": "string", "enum": ["light", "dark"] }
+      },
+      "required": ["primary_color", "accent_color", "hero_headline", "hero_cta", "theme"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles and credits"
+    },
+    "/generations/{generationId}": {
+      "schema": { "$ref": "#/entities/Generation" },
+      "description": "History of generated assets"
+    },
+    "/settings/global": {
+      "schema": { "$ref": "#/entities/SiteSettings" },
+      "description": "Global site settings"
+    }
+  }
+}
