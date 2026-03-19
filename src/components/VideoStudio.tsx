@@ -251,8 +251,13 @@ const VideoStudio = ({
           >
             <Card>
               <h3 className="font-bold mb-4">Your Generated Video</h3>
-              <div className="aspect-video bg-slate-800 rounded-lg overflow-hidden shadow-2xl shadow-black/50 mb-4">
+              <div className="relative aspect-video bg-slate-800 rounded-lg overflow-hidden shadow-2xl shadow-black/50 mb-4">
                 <video src={videoResult} controls className="w-full h-full object-cover" />
+                {user?.subscription_tier === 'free' && (
+                  <div className="absolute bottom-4 right-4 pointer-events-none opacity-50 bg-black/50 px-2 py-1 rounded text-white text-xs font-bold tracking-widest">
+                    CREATED WITH AI STUDIO
+                  </div>
+                )}
               </div>
               <Button className="w-full" variant="outline" onClick={() => {
                 const a = document.createElement('a');

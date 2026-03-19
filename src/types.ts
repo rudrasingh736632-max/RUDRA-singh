@@ -6,6 +6,10 @@ export interface User {
   is_admin: boolean;
   subscription_tier: string;
   created_at?: string;
+  last_credit_reset?: string;
+  referral_code?: string;
+  referred_by?: string;
+  referral_count?: number;
 }
 
 export interface Generation {

@@ -6,7 +6,7 @@ import {
   Menu, X, Check, AlertCircle, Trash2, Edit3,
   Monitor, Palette, Type, Sliders, BookOpen, Lightbulb, List, MessageSquare,
   Scissors, Sun, Moon, Contrast, Droplets, Wand2, Users, Home, Volume2, Search,
-  Info, Shield, FileText, Mail
+  Info, Shield, FileText, Mail, Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { get, set } from 'idb-keyval';
@@ -506,11 +506,70 @@ const AuthPage = ({ onAuth, onBack }: any) => {
     setLoading(true);
     setError('');
     try {
-      // In a real app, you'd use createUserWithEmailAndPassword / signInWithEmailAndPassword from firebase/auth
-      // For this demo, we'll just use Google Login as the primary method since it's fully supported in the iframe
-      setError('Email/password login is disabled in this demo. Please use Google Login.');
+      const { auth, createUserWithEmailAndPassword, signInWithEmailAndPassword, db, doc, getDoc, setDoc, collection, query, where, getDocs, updateDoc, increment } = await import('./firebase');
+      
+      let result;
+      if (isLogin) {
+        result = await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        result = await createUserWithEmailAndPassword(auth, email, password);
+      }
+
+      const userRef = doc(db, 'users', result.user.uid);
+      const userSnap = await getDoc(userRef);
+      
+      let userData;
+      if (userSnap.exists()) {
+        userData = userSnap.data();
+      } else {
+        let referredBy = null;
+        const searchParams = new URLSearchParams(window.location.search);
+        const refCode = searchParams.get('ref');
+        
+        if (refCode && refCode !== result.user.uid) {
+          referredBy = refCode;
+        }
+
+        userData = {
+          uid: result.user.uid,
+          email: result.user.email,
+          photoURL: result.user.photoURL || null,
+          credits: referredBy ? 350 : 300, // Bonus 50 credits for signing up with referral
+          subscription_tier: 'free',
+          created_at: new Date().toISOString(),
+          referral_code: result.user.uid, // Use UID as referral code
+          referred_by: referredBy,
+          referral_count: 0,
+          total_referral_credits: 0
+        };
+        
+        try {
+          const { writeBatch } = await import('./firebase');
+          const batch = writeBatch(db);
+          batch.set(userRef, userData);
+          
+          if (referredBy) {
+            const referrerRef = doc(db, 'users', referredBy);
+            batch.update(referrerRef, {
+              credits: increment(50),
+              referral_count: increment(1),
+              total_referral_credits: increment(50)
+            });
+          }
+          await batch.commit();
+        } catch (err) {
+          console.error("Failed to create user or process referral:", err);
+          // Fallback to just creating the user if referral fails
+          userData.referred_by = null;
+          userData.credits = 300;
+          await setDoc(userRef, userData);
+        }
+      }
+
+      onAuth({ user: userData });
     } catch (err: any) {
-      setError(err.message);
+      console.error("Auth Error:", err);
+      setError(err.message || 'Authentication failed');
     } finally {
       setLoading(false);
     }
@@ -520,7 +579,7 @@ const AuthPage = ({ onAuth, onBack }: any) => {
     setLoading(true);
     setError('');
     try {
-      const { signInWithPopup, auth, googleProvider, db, doc, getDoc, setDoc } = await import('./firebase');
+      const { signInWithPopup, auth, googleProvider, db, doc, getDoc, setDoc, collection, query, where, getDocs, updateDoc, increment } = await import('./firebase');
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
 
@@ -530,17 +589,50 @@ const AuthPage = ({ onAuth, onBack }: any) => {
 
       let userData;
       if (!userSnap.exists()) {
+        let referredBy = null;
+        const searchParams = new URLSearchParams(window.location.search);
+        const refCode = searchParams.get('ref');
+        
+        if (refCode && refCode !== user.uid) {
+          referredBy = refCode;
+        }
+
         // Create new user
         userData = {
           uid: user.uid,
           email: user.email,
-          photoURL: user.photoURL,
-          credits: 50, // Starting credits
+          photoURL: user.photoURL || null,
+          credits: referredBy ? 100 : 50, // Starting credits + bonus
           is_admin: false,
           subscription_tier: 'free',
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          referral_code: user.uid, // Use UID as referral code for secure lookups
+          referred_by: referredBy,
+          referral_count: 0,
+          total_referral_credits: 0
         };
-        await setDoc(userRef, userData);
+        
+        try {
+          const { writeBatch } = await import('./firebase');
+          const batch = writeBatch(db);
+          batch.set(userRef, userData);
+          
+          if (referredBy) {
+            const referrerRef = doc(db, 'users', referredBy);
+            batch.update(referrerRef, {
+              credits: increment(50),
+              referral_count: increment(1),
+              total_referral_credits: increment(50)
+            });
+          }
+          await batch.commit();
+        } catch (err) {
+          console.error("Failed to create user or process referral:", err);
+          // Fallback to just creating the user if referral fails
+          userData.referred_by = null;
+          userData.credits = 50;
+          await setDoc(userRef, userData);
+        }
       } else {
         userData = userSnap.data();
         // Update photoURL if missing
@@ -714,6 +806,9 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
 
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showCreditModal, setShowCreditModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [selectedPlanForPayment, setSelectedPlanForPayment] = useState<string | null>(null);
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const [upgradeMessage, setUpgradeMessage] = useState({ title: 'Upgrade to Pro', desc: 'You need more credits or a Pro subscription to use this feature.' });
   const [upgradingPlan, setUpgradingPlan] = useState<string | null>(null);
 
@@ -724,7 +819,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
     if (requiresPremium && currentTier === 'free') {
       setUpgradeMessage({
         title: 'Pro Feature Locked',
-        desc: 'This feature is exclusive to Pro and Enterprise subscribers. Upgrade to unlock it!'
+        desc: 'This feature is exclusive to Pro and Premium subscribers. Upgrade to unlock it!'
       });
       setShowUpgradeModal(true);
       return false;
@@ -740,29 +835,52 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
     return true;
   };
 
-  const handleUpgrade = async (plan: string) => {
+  const handleUpgrade = (plan: string) => {
+    setSelectedPlanForPayment(plan);
+    setShowPaymentModal(true);
+    setShowUpgradeModal(false);
+  };
+
+  const handleProcessPayment = async (provider: 'stripe' | 'razorpay') => {
+    if (!selectedPlanForPayment || !user) return;
+    
     try {
-      setUpgradingPlan(plan);
+      setUpgradingPlan(selectedPlanForPayment);
+      setShowPaymentModal(false);
+      
+      // Simulate payment processing
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
       const { db, doc, updateDoc } = await import('./firebase');
       const userRef = doc(db, 'users', user.uid);
-      const newCredits = plan === 'limited' ? 999999 : plan === 'pro' ? 500 : 50;
-      
-      // Simulate payment processing and email sending
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      const newCredits = selectedPlanForPayment === 'limited' ? 999999 : selectedPlanForPayment === 'pro' ? 500 : 50;
       
       await updateDoc(userRef, {
-        subscription_tier: plan,
+        subscription_tier: selectedPlanForPayment,
         credits: newCredits
       });
-      // The onSnapshot listener in App will automatically update the user state
-      setShowUpgradeModal(false);
       
-      alert(`🎉 Successfully upgraded to ${plan.toUpperCase()} plan!\n\n📧 A welcome purchase receipt and onboarding guide has been sent directly to your Gmail: ${user.email}`);
+      const planName = selectedPlanForPayment === 'limited' ? 'PREMIUM' : selectedPlanForPayment === 'pro' ? 'PRO' : 'FREE';
+      
+      // Send email notification
+      fetch('/api/notifications/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: user.email,
+          subject: `Subscription upgraded to ${planName}`,
+          type: 'subscription_success',
+          data: { plan: planName, credits: newCredits }
+        })
+      }).catch(console.error);
+
+      alert(`🎉 Successfully upgraded to ${planName} plan via ${provider.toUpperCase()}!\n\n📧 A welcome purchase receipt and onboarding guide has been sent directly to your Gmail: ${user.email}`);
     } catch (e) {
       console.error(e);
-      alert('Failed to upgrade');
+      alert('Failed to process payment');
     } finally {
       setUpgradingPlan(null);
+      setSelectedPlanForPayment(null);
     }
   };
 
@@ -837,11 +955,12 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
   ];
 
   const handleGenerateVideo = async (settings: any = {}) => {
-    if (!checkCredits(25, true)) return;
+    if (!checkCredits(10, true)) return;
     setLoading(true);
     setVideoProgress('Generating your video... this may take a moment.');
+    let finalPrompt = '';
     try {
-      let finalPrompt = `${videoPrompt}, ${videoMode} style`;
+      finalPrompt = `${videoPrompt}, ${videoMode} style`;
       if (settings.negativePrompt) {
         finalPrompt += `. Do not include: ${settings.negativePrompt}`;
       }
@@ -854,7 +973,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
       
       const videoUrl = await geminiService.generateSingleVideo(finalPrompt, settings.aspectRatio || '16:9', settings.duration || '5s');
       setVideoResult(videoUrl);
-      await trackGeneration('video', finalPrompt, videoUrl, 25);
+      await trackGeneration('video', finalPrompt, videoUrl, 10);
     } catch (err: any) {
       console.error(err);
       const errMsg = err.message || JSON.stringify(err);
@@ -995,6 +1114,20 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
       try {
         const newCredits = (user.credits ?? 0) - credits;
         await import('./firebase').then(({ updateDoc }) => updateDoc(doc(db, 'users', user.uid), { credits: newCredits }));
+        
+        // Send low credit warning email
+        if (newCredits <= 10 && (user.credits ?? 0) > 10) {
+          fetch('/api/notifications/email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: user.email,
+              subject: 'Low Credit Warning',
+              type: 'low_credits',
+              data: { remainingCredits: newCredits }
+            })
+          }).catch(console.error);
+        }
       } catch (updateError) {
         console.error("Failed to update user credits:", updateError);
         throw updateError;
@@ -1010,12 +1143,12 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
   };
 
   const handleGenerateScript = async () => {
-    if (!checkCredits(2)) return;
+    if (!checkCredits(1)) return;
     setLoading(true);
     try {
       const result = await geminiService.generateText(`Write a detailed video script for the following topic: ${scriptPrompt}. Include scene descriptions, camera angles, and dialogue/voiceover.`);
       setScriptResult(result);
-      await trackGeneration('script', scriptPrompt, 'text', 2);
+      await trackGeneration('script', scriptPrompt, 'text', 1);
     } catch (err) {
       alert("Script generation failed");
     } finally {
@@ -1055,7 +1188,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
   };
 
   const handleGenerateVoice = async () => {
-    if (!checkCredits(3)) return;
+    if (!checkCredits(2)) return;
     setLoading(true);
     try {
       let prompt = '';
@@ -1087,7 +1220,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
       
       const url = await geminiService.generateVoice(prompt, baseVoice, { noiseReduction: voiceNoiseReduction, eq: voiceEq });
       setVoiceResult(url);
-      await trackGeneration('voice', voiceText, url, 3);
+      await trackGeneration('voice', voiceText, url, 2);
     } catch (err) {
       alert("Generation failed");
     } finally {
@@ -1118,7 +1251,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
   };
 
   const handleGenerateImage = async () => {
-    if (!checkCredits(4)) return;
+    if (!checkCredits(5)) return;
     setLoading(true);
     try {
       let finalPrompt = imagePrompt;
@@ -1127,7 +1260,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
       }
       const url = await geminiService.generateImage(finalPrompt, imageAspectRatio);
       setImageResult(url);
-      await trackGeneration('image', finalPrompt, url, 4);
+      await trackGeneration('image', finalPrompt, url, 5);
     } catch (err) {
       alert("Generation failed");
     } finally {
@@ -1212,18 +1345,19 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
       label: 'Creation Tools',
       items: [
         { id: 'scriptwriter', icon: Type, label: 'AI Scriptwriter' },
-        { id: 'voice', icon: Mic, label: 'Text to Voice' },
-        { id: 'music', icon: Volume2, label: 'Background Music' },
+        { id: 'voice', icon: Mic, label: 'Text to Voice', isPremium: true },
+        { id: 'music', icon: Volume2, label: 'Background Music', isPremium: true },
         { id: 'image', icon: ImageIcon, label: 'Text to Image' },
         { id: 'video', icon: Video, label: 'Text to Video', isPremium: true },
-        { id: 'thumbnail', icon: Layout, label: 'Thumbnails' },
-        { id: 'bg-remover', icon: Scissors, label: 'Background Remover' },
+        { id: 'thumbnail', icon: Layout, label: 'Thumbnails', isPremium: true },
+        { id: 'bg-remover', icon: Scissors, label: 'Background Remover', isPremium: true },
       ]
     },
     {
       label: 'Account',
       items: [
         { id: 'billing', icon: CreditCard, label: 'Billing' },
+        { id: 'referrals', icon: Users, label: 'Referrals' },
         { id: 'feedback', icon: MessageSquare, label: 'Feedback & Help' },
         { id: 'history', icon: History, label: 'History' },
         { id: 'settings', icon: Settings, label: 'Settings' },
@@ -1368,6 +1502,16 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
               <AdPlaceholder format="rectangle" />
             </div>
           )}
+
+          <button 
+            onClick={onLogout}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 mt-4"
+          >
+            <LogOut className="w-5 h-5 text-slate-400 group-hover:text-slate-500 dark:group-hover:text-slate-300 transition-colors" />
+            {(sidebarOpen || mobileMenuOpen) && (
+              <span className="flex-1 text-left whitespace-nowrap">Log Out</span>
+            )}
+          </button>
         </div>
       </aside>
 
@@ -1389,7 +1533,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
             </button>
             <div>
               <h1 className="text-lg lg:text-2xl font-bold">{menuGroups.flatMap(g => g.items).find(m => m.id === activeTab)?.label}</h1>
-              <p className="hidden sm:block text-xs lg:text-sm text-slate-500 dark:text-slate-400">Welcome back, {user.email.split('@')[0]}</p>
+              <p className="hidden sm:block text-xs lg:text-sm text-slate-500 dark:text-slate-400">Welcome back, {(user.email || 'User').split('@')[0]}</p>
             </div>
           </div>
           
@@ -1536,7 +1680,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${voiceMode === 'clone' ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-900 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
                       onClick={() => {
                         if (user.subscription_tier === 'free') {
-                          setUpgradeMessage({ title: 'Pro Feature', desc: 'Voice Cloning is only available on Pro and Limited Edition plans.' });
+                          setUpgradeMessage({ title: 'Pro Feature', desc: 'Voice Cloning is only available on Pro and Premium plans.' });
                           setShowUpgradeModal(true);
                         } else {
                           setVoiceMode('clone');
@@ -2263,7 +2407,7 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
                 <Card>
                   <div className="flex items-center justify-between mb-6">
                     <div>
-                      <h3 className="font-bold text-xl mb-1">Current Plan: <span className="text-accent capitalize">{user.subscription_tier}</span></h3>
+                      <h3 className="font-bold text-xl mb-1">Current Plan: <span className="text-accent capitalize">{user.subscription_tier === 'free' ? 'Free' : user.subscription_tier === 'limited' ? 'Premium' : user.subscription_tier}</span></h3>
                       <p className="text-slate-500 dark:text-slate-400">You have {user.credits} credits remaining.</p>
                     </div>
                     <div className="flex gap-2">
@@ -2281,14 +2425,14 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
 
                 <div className="grid md:grid-cols-3 gap-6">
                   <Card className="border-slate-300 dark:border-slate-700">
-                    <h3 className="text-2xl font-bold mb-2">Starter</h3>
+                    <h3 className="text-2xl font-bold mb-2">Free</h3>
                     <p className="text-slate-500 dark:text-slate-400 mb-6">Perfect for trying out the tools.</p>
-                    <div className="text-4xl font-bold mb-6">$3<span className="text-lg text-slate-500 font-normal">/mo</span></div>
+                    <div className="text-4xl font-bold mb-6">$0<span className="text-lg text-slate-500 font-normal">/mo</span></div>
                     <ul className="space-y-3 mb-8">
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> 50 Credits / month</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Standard Voices</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Standard Image Gen</li>
-                      <li className="flex items-center gap-2 text-slate-500"><X className="w-5 h-5" /> No Video Generation</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> 10 Credits / day</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Limited AI Tools</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Standard Speed</li>
+                      <li className="flex items-center gap-2 text-slate-500"><X className="w-5 h-5" /> Watermark on Content</li>
                     </ul>
                     <Button 
                       className="w-full" 
@@ -2302,12 +2446,12 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
                     <div className="absolute top-4 right-4 bg-accent text-white text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">Popular</div>
                     <h3 className="text-2xl font-bold mb-2">Pro</h3>
                     <p className="text-slate-500 dark:text-slate-400 mb-6">For serious content creators.</p>
-                    <div className="text-4xl font-bold mb-6">$29<span className="text-lg text-slate-500 font-normal">/mo</span></div>
+                    <div className="text-4xl font-bold mb-6">$9<span className="text-lg text-slate-500 font-normal">/mo</span></div>
                     <ul className="space-y-3 mb-8">
                       <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> 500 Credits / month</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Premium Voices</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> High-Res Image Gen</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Video Generation</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Access to all AI tools</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> Faster generation speed</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-accent" /> No watermark</li>
                     </ul>
                     <Button 
                       className="w-full" 
@@ -2319,26 +2463,75 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
                     </Button>
                   </Card>
                   <Card className="border-purple-500 relative overflow-hidden">
-                    <div className="absolute top-4 right-4 bg-purple-500 text-white text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">Ultra Pro</div>
-                    <h3 className="text-2xl font-bold mb-2">Ultra Pro</h3>
+                    <div className="absolute top-4 right-4 bg-purple-500 text-white text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">Premium</div>
+                    <h3 className="text-2xl font-bold mb-2">Premium</h3>
                     <p className="text-slate-500 dark:text-slate-400 mb-6">Exclusive access and unlimited power.</p>
-                    <div className="text-4xl font-bold mb-6">$99<span className="text-lg text-slate-500 font-normal">/mo</span></div>
+                    <div className="text-4xl font-bold mb-6">$19<span className="text-lg text-slate-500 font-normal">/mo</span></div>
                     <ul className="space-y-3 mb-8">
                       <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Unlimited Credits</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Premium Voices</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> High-Res Image Gen</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Video Generation</li>
-                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Priority Support</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Priority AI processing</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> Premium templates access</li>
+                      <li className="flex items-center gap-2 text-slate-600 dark:text-slate-300"><Check className="w-5 h-5 text-purple-500" /> API access</li>
                     </ul>
                     <Button 
                       className="w-full bg-gradient-to-br from-purple-500 to-indigo-600 text-white border-0" 
                       onClick={() => handleUpgrade('limited')}
                       disabled={user.subscription_tier === 'limited' || upgradingPlan !== null}
                     >
-                      {upgradingPlan === 'limited' ? 'Processing...' : user.subscription_tier === 'limited' ? 'Current Plan' : 'Upgrade to Ultra Pro'}
+                      {upgradingPlan === 'limited' ? 'Processing...' : user.subscription_tier === 'limited' ? 'Current Plan' : 'Upgrade to Premium'}
                     </Button>
                   </Card>
                 </div>
+              </div>
+            )}
+
+            {activeTab === 'referrals' && (
+              <div className="max-w-4xl mx-auto space-y-8">
+                <Card>
+                  <h3 className="font-bold text-xl mb-4 flex items-center gap-2">
+                    <Users className="w-6 h-6 text-accent" />
+                    Referral Program
+                  </h3>
+                  <p className="text-slate-500 dark:text-slate-400 mb-6">
+                    Invite your friends to Studio Pro and earn free credits! For every friend who signs up using your unique referral link, you'll receive 50 bonus credits, and they'll get 50 bonus credits to start.
+                  </p>
+                  
+                  <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-6 mb-8">
+                    <h4 className="text-sm font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-3">Your Unique Referral Link</h4>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="flex-1 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-4 py-3 font-mono text-sm text-slate-800 dark:text-slate-200 break-all flex items-center">
+                        {`${window.location.origin}?ref=${user.referral_code || user.uid.substring(0, 8).toUpperCase()}`}
+                      </div>
+                      <Button 
+                        onClick={() => {
+                          const link = `${window.location.origin}?ref=${user.referral_code || user.uid.substring(0, 8).toUpperCase()}`;
+                          navigator.clipboard.writeText(link);
+                          alert('Referral link copied to clipboard!');
+                        }}
+                        className="shrink-0"
+                      >
+                        <Copy className="w-4 h-4 mr-2" /> Copy Link
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 gap-6">
+                    <div className="bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-center">
+                      <div className="w-12 h-12 bg-accent/10 rounded-full flex items-center justify-center mb-3">
+                        <Users className="w-6 h-6 text-accent" />
+                      </div>
+                      <div className="text-3xl font-bold mb-1">{user.referral_count || 0}</div>
+                      <div className="text-sm text-slate-500 dark:text-slate-400">Friends Referred</div>
+                    </div>
+                    <div className="bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-center">
+                      <div className="w-12 h-12 bg-green-500/10 rounded-full flex items-center justify-center mb-3">
+                        <Sparkles className="w-6 h-6 text-green-500" />
+                      </div>
+                      <div className="text-3xl font-bold mb-1 text-green-500">{user.total_referral_credits || 0}</div>
+                      <div className="text-sm text-slate-500 dark:text-slate-400">Credits Earned</div>
+                    </div>
+                  </div>
+                </Card>
               </div>
             )}
 
@@ -2523,8 +2716,79 @@ const Dashboard = ({ user, onLogout, settings }: any) => {
                   onClick={() => handleUpgrade(user.subscription_tier === 'pro' ? 'limited' : 'pro')}
                   disabled={upgradingPlan !== null}
                 >
-                  {upgradingPlan !== null ? 'Processing...' : user.subscription_tier === 'pro' ? 'Upgrade to Ultra Pro - $99/mo' : 'Upgrade to Pro - $29/mo'}
+                  {upgradingPlan !== null ? 'Processing...' : user.subscription_tier === 'pro' ? 'Upgrade to Premium - $19/mo' : 'Upgrade to Pro - $9/mo'}
                 </Button>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Payment Modal */}
+      <AnimatePresence>
+        {showPaymentModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              className="bg-white dark:bg-slate-900/80 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-3xl p-8 max-w-md w-full relative shadow-[0_16px_64px_rgba(0,0,0,0.5)]"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent rounded-3xl pointer-events-none" />
+              <button onClick={() => setShowPaymentModal(false)} className="absolute top-4 right-4 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white z-10">
+                <X className="w-6 h-6" />
+              </button>
+              <div className="text-center mb-6 relative z-10">
+                <div className="w-16 h-16 bg-accent/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <CreditCard className="w-8 h-8 text-accent" />
+                </div>
+                <h2 className="text-2xl font-bold mb-2">Select Payment Method</h2>
+                <p className="text-slate-500 dark:text-slate-400">Choose how you want to pay for your {selectedPlanForPayment === 'limited' ? 'Premium' : 'Pro'} plan.</p>
+              </div>
+              <div className="space-y-4 mb-8 relative z-10">
+                <button
+                  onClick={() => handleProcessPayment('stripe')}
+                  disabled={upgradingPlan !== null}
+                  className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-white/10 hover:border-accent dark:hover:border-accent transition-colors bg-white/50 dark:bg-slate-800/50 disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-[#635BFF]/10 flex items-center justify-center">
+                      <CreditCard className="w-5 h-5 text-[#635BFF]" />
+                    </div>
+                    <div className="text-left">
+                      <div className="font-bold">Stripe</div>
+                      <div className="text-xs text-slate-500">Credit Card, Apple Pay, Google Pay</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-400" />
+                </button>
+                <button
+                  onClick={() => handleProcessPayment('razorpay')}
+                  disabled={upgradingPlan !== null}
+                  className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-white/10 hover:border-accent dark:hover:border-accent transition-colors bg-white/50 dark:bg-slate-800/50 disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-[#02042B]/10 dark:bg-[#02042B]/30 flex items-center justify-center">
+                      <CreditCard className="w-5 h-5 text-[#02042B] dark:text-white" />
+                    </div>
+                    <div className="text-left">
+                      <div className="font-bold">Razorpay</div>
+                      <div className="text-xs text-slate-500">UPI, NetBanking, Cards (India)</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-400" />
+                </button>
+              </div>
+              {upgradingPlan !== null && (
+                <div className="text-center text-sm text-accent animate-pulse relative z-10">
+                  Processing payment securely...
+                </div>
               )}
             </motion.div>
           </motion.div>
@@ -2803,9 +3067,16 @@ export default function App() {
     <>
       {user ? (
         <Dashboard user={user} onLogout={async () => { 
-          const { auth, signOut } = await import('./firebase');
-          await signOut(auth);
-          setUser(null); 
+          console.log("Logout button clicked");
+          try {
+            const { auth, signOut } = await import('./firebase');
+            await signOut(auth);
+            console.log("Firebase signOut successful");
+            setUser(null); 
+          } catch (error) {
+            console.error("Logout error:", error);
+            alert("Failed to logout. Please try again.");
+          }
         }} />
       ) : showAuth ? (
         <AuthPage onAuth={(data: any) => {

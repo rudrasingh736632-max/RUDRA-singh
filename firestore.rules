@@ -110,13 +110,18 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'email', 'credits', 'is_admin', 'subscription_tier', 'created_at']) &&
+      return hasOnlyAllowedFields(['uid', 'email', 'credits', 'is_admin', 'subscription_tier', 'created_at', 'photoURL', 'referral_code', 'referred_by', 'referral_count', 'total_referral_credits']) &&
              data.uid is string && data.uid.size() > 0 && data.uid.size() < 100 &&
              data.email is string && isValidEmail(data.email) && data.email.size() < 255 &&
              data.credits is number && data.credits >= 0 &&
              (!('is_admin' in data) || data.is_admin is bool) &&
              (!('subscription_tier' in data) || data.subscription_tier in ['free', 'pro', 'enterprise']) &&
-             (!('created_at' in data) || isValidDateString(data.created_at));
+             (!('created_at' in data) || isValidDateString(data.created_at)) &&
+             (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() < 1000)) &&
+             (!('referral_code' in data) || data.referral_code == null || (data.referral_code is string && data.referral_code.size() < 100)) &&
+             (!('referred_by' in data) || data.referred_by == null || (data.referred_by is string && data.referred_by.size() < 100)) &&
+             (!('referral_count' in data) || data.referral_count is number && data.referral_count >= 0) &&
+             (!('total_referral_credits' in data) || data.total_referral_credits is number && data.total_referral_credits >= 0);
     }
 
     function isValidGeneration(data) {
@@ -158,14 +163,21 @@ service cloud.firestore {
       allow create: if isOwner(userId) && 
                        isValidUser(request.resource.data) && 
                        uidUnchanged() &&
-                       (request.resource.data.is_admin == false || isAdmin());
+                       (!('is_admin' in request.resource.data) || request.resource.data.is_admin == false || isAdmin());
                        
       // Users can update their own profile, but cannot change immutable fields or escalate privileges
       allow update: if (isOwner(userId) && 
                         isValidUser(request.resource.data) && 
-                        areImmutableFieldsUnchanged(['uid', 'email', 'created_at']) &&
-                        request.resource.data.is_admin == resource.data.is_admin) || 
-                       (isAdmin() && isValidUser(request.resource.data) && areImmutableFieldsUnchanged(['uid', 'email', 'created_at']));
+                        areImmutableFieldsUnchanged(['uid', 'email', 'created_at', 'referral_code', 'referred_by']) &&
+                        (!('is_admin' in request.resource.data) || request.resource.data.is_admin == resource.data.is_admin)) || 
+                       (isAdmin() && isValidUser(request.resource.data) && areImmutableFieldsUnchanged(['uid', 'email', 'created_at'])) ||
+                       (isAuthenticated() && 
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'referral_count', 'total_referral_credits']) &&
+                        request.resource.data.credits == resource.data.credits + 50 &&
+                        request.resource.data.referral_count == resource.data.referral_count + 1 &&
+                        request.resource.data.total_referral_credits == resource.data.total_referral_credits + 50 &&
+                        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+                        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.referred_by == userId);
                        
       allow delete: if isAdmin();
     }

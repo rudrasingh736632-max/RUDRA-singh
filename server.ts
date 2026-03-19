@@ -7,10 +7,19 @@ import db from "./src/db.js";
 import { GoogleGenAI } from "@google/genai";
 import path from 'path';
 import fs from 'fs';
+import Stripe from 'stripe';
+import Razorpay from 'razorpay';
 
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-key";
+
+// Initialize payment gateways (use dummy keys if env vars are missing)
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', { apiVersion: '2026-02-25.clover' });
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_dummy',
+  key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_secret'
+});
 
 app.use(cors());
 app.use(express.json());
@@ -33,6 +42,106 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// --- Notification Routes ---
+
+app.post("/api/notifications/email", (req, res) => {
+  const { to, subject, type, data } = req.body;
+  
+  // In a real application, you would integrate with SendGrid, Mailgun, AWS SES, etc.
+  console.log(`\n[EMAIL NOTIFICATION SIMULATION]`);
+  console.log(`To: ${to}`);
+  console.log(`Subject: ${subject}`);
+  console.log(`Type: ${type}`);
+  console.log(`Data:`, data);
+  console.log(`-----------------------------------\n`);
+
+  res.json({ success: true, message: "Email notification queued successfully" });
+});
+
+// --- Payment Routes ---
+
+const PLANS = {
+  pro_monthly: { price: 900, currency: 'usd', credits: 500, name: 'Pro Plan (Monthly)' },
+  pro_yearly: { price: 9000, currency: 'usd', credits: 500, name: 'Pro Plan (Yearly)' },
+  premium_monthly: { price: 1900, currency: 'usd', credits: 999999, name: 'Premium Plan (Monthly)' },
+  premium_yearly: { price: 19000, currency: 'usd', credits: 999999, name: 'Premium Plan (Yearly)' }
+};
+
+app.post("/api/payments/stripe/create-checkout-session", authenticateToken, async (req: any, res) => {
+  const { planId, isYearly } = req.body;
+  const planKey = `${planId}_${isYearly ? 'yearly' : 'monthly'}` as keyof typeof PLANS;
+  const plan = PLANS[planKey];
+
+  if (!plan) return res.status(400).json({ error: "Invalid plan" });
+
+  try {
+    // In a real app, you'd use actual Stripe Price IDs
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: plan.currency,
+            product_data: { name: plan.name },
+            unit_amount: plan.price,
+            recurring: { interval: isYearly ? 'year' : 'month' }
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'subscription',
+      success_url: `${req.headers.origin}/?payment=success&plan=${planId}`,
+      cancel_url: `${req.headers.origin}/?payment=cancelled`,
+      client_reference_id: req.user.id.toString(),
+    });
+
+    res.json({ id: session.id, url: session.url });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/payments/razorpay/create-order", authenticateToken, async (req: any, res) => {
+  const { planId, isYearly } = req.body;
+  const planKey = `${planId}_${isYearly ? 'yearly' : 'monthly'}` as keyof typeof PLANS;
+  const plan = PLANS[planKey];
+
+  if (!plan) return res.status(400).json({ error: "Invalid plan" });
+
+  try {
+    // Convert USD to INR roughly for Razorpay demo
+    const amountInr = plan.price * 80; 
+    
+    const order = await razorpay.orders.create({
+      amount: amountInr,
+      currency: "INR",
+      receipt: `receipt_${req.user.id}_${Date.now()}`,
+      notes: { planId, userId: req.user.id }
+    });
+
+    res.json(order);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/payments/verify", authenticateToken, async (req: any, res) => {
+  const { planId, paymentId, provider } = req.body;
+  
+  // In a real app, verify the payment signature/status with Stripe/Razorpay
+  // For this demo, we assume success if they hit this endpoint
+  
+  const credits = planId === 'premium' ? 999999 : 500;
+  
+  try {
+    db.prepare("UPDATE users SET subscription_tier = ?, credits = ? WHERE id = ?").run(planId, credits, req.user.id);
+    const user: any = db.prepare("SELECT id, email, credits, is_admin, subscription_tier FROM users WHERE id = ?").get(req.user.id);
+    res.json({ success: true, user });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Auth

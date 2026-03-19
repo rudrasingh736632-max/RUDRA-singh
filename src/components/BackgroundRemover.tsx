@@ -141,14 +141,21 @@ export const BackgroundRemover = ({ user, onRemoveBg, loading, resultImage }: an
                 <span className="text-sm">Processing image...</span>
               </div>
             ) : resultImage ? (
-              <motion.img 
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                src={resultImage} 
-                alt="Result" 
-                className="w-full h-full object-contain relative z-10" 
-              />
+              <div className="relative w-full h-full z-10 flex items-center justify-center">
+                <motion.img 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                  src={resultImage} 
+                  alt="Result" 
+                  className="max-w-full max-h-full object-contain" 
+                />
+                {user?.subscription_tier === 'free' && (
+                  <div className="absolute bottom-2 right-2 pointer-events-none opacity-50 bg-black/50 px-2 py-1 rounded text-white text-[10px] font-bold tracking-widest">
+                    CREATED WITH AI STUDIO
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="text-black dark:text-slate-400 text-sm text-center px-4 relative z-10">
                 Processed image will appear here
@@ -157,12 +164,42 @@ export const BackgroundRemover = ({ user, onRemoveBg, loading, resultImage }: an
           </div>
           {resultImage && (
             <Button className="w-full mt-4" variant="outline" onClick={() => {
-              const a = document.createElement('a');
-              a.href = resultImage;
-              a.download = 'removed-bg.png';
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
+              if (user?.subscription_tier === 'free') {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return;
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.src = resultImage;
+                img.onload = () => {
+                  canvas.width = img.width;
+                  canvas.height = img.height;
+                  ctx.drawImage(img, 0, 0);
+                  const scaleFactor = canvas.width / 400;
+                  ctx.font = `bold ${12 * scaleFactor}px Arial`;
+                  ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                  ctx.textAlign = 'right';
+                  ctx.textBaseline = 'bottom';
+                  ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+                  ctx.shadowBlur = 2 * scaleFactor;
+                  ctx.shadowOffsetX = 1 * scaleFactor;
+                  ctx.shadowOffsetY = 1 * scaleFactor;
+                  ctx.fillText('CREATED WITH AI STUDIO', canvas.width - 10 * scaleFactor, canvas.height - 10 * scaleFactor);
+                  const a = document.createElement('a');
+                  a.href = canvas.toDataURL('image/png');
+                  a.download = 'removed-bg.png';
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                };
+              } else {
+                const a = document.createElement('a');
+                a.href = resultImage;
+                a.download = 'removed-bg.png';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }
             }}>
               <Download className="w-4 h-4 mr-2" /> Download PNG
             </Button>
